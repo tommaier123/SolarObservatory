@@ -20,7 +20,7 @@ namespace SolarVideo
                 var downloadTasks = wavelengths.Select(sourceId => DownloadAndProcessAsync(requestedTimestamp, sourceId)).ToArray();
                 var results = await Task.WhenAll(downloadTasks);
                 
-                var successfulDownloads = results.Where(r => r.qoiData != null).ToList();
+                var successfulDownloads = results.Where(r => r.rawData != null).ToList();
                 
                 if (successfulDownloads.Count > 0)
                 {
@@ -40,7 +40,7 @@ namespace SolarVideo
             }
         }
 
-        static async Task<(byte[]? qoiData, DateTime timestamp, int sourceId)> DownloadAndProcessAsync(DateTime timestamp, int sourceId)
+        static async Task<(byte[]? rawData, DateTime timestamp, int sourceId)> DownloadAndProcessAsync(DateTime timestamp, int sourceId)
         {
             string url = $"https://api.helioviewer.org/v2/getJP2Image/?date={timestamp:yyyy-MM-ddTHH:mm:ssZ}&sourceId={sourceId}";
 
@@ -77,12 +77,15 @@ namespace SolarVideo
                         image.FilterType = FilterType.Lanczos;
                         image.Resize(image.Width / 2, image.Height / 2);
 
-                        // Convert to QOI format in memory
-                        image.Format = MagickFormat.Qoi;
-                        byte[] qoiData = image.ToByteArray();
+                        // Convert to grayscale if not already
+                        image.ColorSpace = ColorSpace.Gray;
+                        image.Format = MagickFormat.Gray;
                         
-                        Console.WriteLine($"Processed sourceId {sourceId}: {qoiData.Length:N0} bytes");
-                        return (qoiData, imageTimestamp, sourceId);
+                        // Get raw pixel data
+                        byte[] rawPixels = image.ToByteArray();
+                        
+                        Console.WriteLine($"Processed sourceId {sourceId}: {image.Width}x{image.Height}, {rawPixels.Length:N0} bytes");
+                        return (rawPixels, imageTimestamp, sourceId);
                     }
                 }
             }
@@ -93,7 +96,7 @@ namespace SolarVideo
             }
         }
 
-        static async Task CreateContainerFileAsync(DateTime timestamp, List<(byte[]? qoiData, DateTime timestamp, int sourceId)> downloads)
+        static async Task CreateContainerFileAsync(DateTime timestamp, List<(byte[]? rawData, DateTime timestamp, int sourceId)> downloads)
         {
             string containerPath = Path.Combine(AppContext.BaseDirectory, "solar.dat");
             
@@ -114,15 +117,15 @@ namespace SolarVideo
                 // For each image:
                 // - Source ID (1 byte)
                 // - Data length (4 bytes, uint32)
-                // - QOI data (variable)
+                // - Raw grayscale bitmap data (variable)
                 
-                foreach (var (qoiData, _, sourceId) in downloads)
+                foreach (var (rawData, _, sourceId) in downloads)
                 {
-                    if (qoiData != null)
+                    if (rawData != null)
                     {
                         writer.Write((byte)sourceId);
-                        writer.Write((uint)qoiData.Length);
-                        writer.Write(qoiData);
+                        writer.Write((uint)rawData.Length);
+                        writer.Write(rawData);
                     }
                 }
             }
