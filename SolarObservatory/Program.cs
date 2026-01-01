@@ -12,8 +12,8 @@ namespace SolarVideo
             DateTime requestedTimestamp = DateTime.UtcNow;
             Console.WriteLine($"Get: {requestedTimestamp:yyyy-MM-dd HH:mm:ss}");
 
-            // Define wavelengths to download
-            var wavelengths = new[] { 10, 11, 12 }; // AIA 171, 193, 211
+            // Define wavelengths to download: 131, 171, 193, 304, 1700, HMI Mag
+            var wavelengths = new[] { 9, 10, 11, 13, 16, 19 };
             
             var downloadTasks = wavelengths.Select(sourceId => DownloadAndProcessAsync(requestedTimestamp, sourceId)).ToArray();
             var results = await Task.WhenAll(downloadTasks);
@@ -63,22 +63,15 @@ namespace SolarVideo
                 using (Stream contentStream = await response.Content.ReadAsStreamAsync())
                 using (var image = new MagickImage(contentStream))
                 {
-                    // Apply 50% downscaling with Lanczos filter
+                    // Apply downscaling to 2048x2048 with Lanczos filter
                     image.FilterType = FilterType.Lanczos;
-                    image.Resize(image.Width / 2, image.Height / 2);
+                    image.Resize(2048, 2048);
 
                     image.ColorSpace = ColorSpace.Gray;
                     image.Format = MagickFormat.Gray;
                     
                     byte[] rawPixels = image.ToByteArray();
-                    
-                    // Validate dimensions match data size
-                    int expectedSize = (int)(image.Width * image.Height);
-                    if (rawPixels.Length != expectedSize)
-                    {
-                        throw new Exception($"Data size mismatch: expected {expectedSize} bytes ({image.Width}x{image.Height}), got {rawPixels.Length} bytes");
-                    }
-                    
+
                     Console.WriteLine($"Processed sourceId {sourceId}: {image.Width}x{image.Height}, {rawPixels.Length:N0} bytes");
                     return (rawPixels, imageTimestamp, sourceId, image.Width, image.Height);
                 }
@@ -89,40 +82,75 @@ namespace SolarVideo
         {
             string containerPath = Path.Combine(AppContext.BaseDirectory, "solar.dat");
             
+            // Expected order: sourceId 9 (131), 10 (171), 11 (193), 13 (304), 16 (1700), 19 (HMI Mag)
+            // RGB Image 0: R=131, G=171, B=193
+            // RGB Image 1: R=304, G=1700, B=HMI Mag
+            
+            var orderedDownloads = downloads.OrderBy(d => d.sourceId).ToList();
+            
+            if (orderedDownloads.Count != 6)
+            {
+                throw new Exception($"Expected 6 images, got {orderedDownloads.Count}");
+            }
+            
+            // All images are 2048x2048 after downscaling
+            uint width = 2048;
+            uint height = 2048;
+            
+            // Create two RGB images by interleaving channels
+            byte[] rgbImage0 = CreateRgbImage(orderedDownloads[0].rawData!, orderedDownloads[1].rawData!, orderedDownloads[2].rawData!);
+            byte[] rgbImage1 = CreateRgbImage(orderedDownloads[3].rawData!, orderedDownloads[4].rawData!, orderedDownloads[5].rawData!);
+            
             using (var fs = new FileStream(containerPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, useAsync: true))
             using (var writer = new BinaryWriter(fs))
             {
                 // Header:
-                // - Image count (1 byte)
+                // - Image count (1 byte) - always 2
                 // - Timestamp string (19 bytes: "yyyy-MM-dd HH:mm:ss")
                 
-                writer.Write((byte)downloads.Count);
+                writer.Write((byte)2);
                 
                 string timestampStr = timestamp.ToString("yyyy-MM-dd HH:mm:ss");
                 byte[] timestampBytes = System.Text.Encoding.ASCII.GetBytes(timestampStr);
                 writer.Write(timestampBytes); // Always 19 bytes
                 
                 // Image entries:
-                // For each image:
-                // - Source ID (1 byte)
+                // For each RGB image:
                 // - Width (2 bytes, uint16)
                 // - Height (2 bytes, uint16)
-                // - Raw grayscale bitmap data (width * height bytes)
+                // - RGB interleaved bitmap data (width * height * 3 bytes)
                 
-                foreach (var (rawData, _, sourceId, width, height) in downloads)
-                {
-                    if (rawData != null)
-                    {
-                        writer.Write((byte)sourceId);
-                        writer.Write((ushort)width);
-                        writer.Write((ushort)height);
-                        writer.Write(rawData);
-                    }
-                }
+                writer.Write((ushort)width);
+                writer.Write((ushort)height);
+                writer.Write(rgbImage0);
+                
+                writer.Write((ushort)width);
+                writer.Write((ushort)height);
+                writer.Write(rgbImage1);
             }
             
             var fileInfo = new FileInfo(containerPath);
             Console.WriteLine($"Created container of size: {fileInfo.Length:N0} bytes ({fileInfo.Length / 1024.0 / 1024.0:F2} MB)");
+        }
+        
+        static byte[] CreateRgbImage(byte[] rChannel, byte[] gChannel, byte[] bChannel)
+        {
+            if (rChannel.Length != gChannel.Length || gChannel.Length != bChannel.Length)
+            {
+                throw new Exception("All channels must have the same length");
+            }
+            
+            int pixelCount = rChannel.Length;
+            byte[] rgbData = new byte[pixelCount * 3];
+            
+            for (int i = 0; i < pixelCount; i++)
+            {
+                rgbData[i * 3] = rChannel[i];     // R
+                rgbData[i * 3 + 1] = gChannel[i]; // G
+                rgbData[i * 3 + 2] = bChannel[i]; // B
+            }
+            
+            return rgbData;
         }
     }
 }
