@@ -41,11 +41,8 @@ def download_hmi_nrt():
         if len(keys) == 0:
             return None, None, 0, 0
         
-        # Get the most recent record
         latest_rec = keys.iloc[-1]['T_REC']
         
-        # NRT data is directly accessible via URL without export
-        # Get magnetogram segment path from segments dataframe
         if segments is not None and 'magnetogram' in segments.columns:
             magnetogram_path = segments.iloc[-1]['magnetogram']
             base_url = "http://jsoc.stanford.edu"
@@ -54,19 +51,14 @@ def download_hmi_nrt():
             response = requests.get(fits_url, timeout=60)
             response.raise_for_status()
             
-            temp_file = f"temp_nrt_{latest_rec.replace('.', '_').replace(':', '_')}.fits"
-            with open(temp_file, 'wb') as f:
-                f.write(response.content)
-            
-            with fits.open(temp_file) as hdul:
+            from io import BytesIO
+            with fits.open(BytesIO(response.content)) as hdul:
                 if len(hdul) > 1 and hdul[1].data is not None:
                     data = hdul[1].data
                     header = hdul[1].header
                 else:
                     data = hdul[0].data
                     header = hdul[0].header
-            
-            actual_timestamp = None
             
             time_str = latest_rec.replace('_TAI', '')
             try:
@@ -76,22 +68,22 @@ def download_hmi_nrt():
             
             if actual_timestamp.tzinfo is None:
                 actual_timestamp = actual_timestamp.replace(tzinfo=timezone.utc)
-        
+            
             data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
             vmin, vmax = -1500, 1500
             normalized = np.clip((data - vmin) / (vmax - vmin), 0, 1)
             data_8bit = (normalized * 255).astype(np.uint8)
             
-            current_shape = data_8bit.shape
-            zoom_factors = (2048 / current_shape[0], 2048 / current_shape[1])
-            resized = zoom(data_8bit, zoom_factors, order=3)
-            resized = resized[:2048, :2048]
+            img = Image.fromarray(data_8bit)
+            img = img.resize((2048, 2048), Image.LANCZOS)
+            resized = np.array(img)
+            resized = np.fliplr(resized)
             
             debug_dir = Path(__file__).parent / 'debug_images'
             debug_dir.mkdir(exist_ok=True)
             Image.fromarray(resized).save(debug_dir / f'HMI_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
             
-            return resized.flatten(), actual_timestamp, resized.shape[1], resized.shape[0]
+            return resized.flatten(), actual_timestamp, 2048, 2048
         
     except Exception as e:
         print(f"Error downloading HMI NRT data: {e}")
@@ -101,54 +93,48 @@ def download_hmi_nrt():
 
 def download_and_process(timestamp, wavelength, detector='AIA'):
     try:
-        end_time = Time(timestamp) + TimeDelta(30 * u.minute)
-        start_time = Time(timestamp) - TimeDelta(30 * u.minute)
+        wavelength_to_sourceid = {131: 9, 171: 10, 193: 11, 304: 13, 1700: 16}
+        source_id = wavelength_to_sourceid.get(wavelength)
         
-        result = Fido.search(
-            a.Time(start_time, end_time),
-            a.Instrument('AIA'),
-            a.Wavelength(wavelength * u.angstrom),
-            a.Sample(12 * u.minute)
-        )
-        
-        if len(result) == 0 or len(result[0]) == 0:
+        if source_id is None:
             return None, timestamp, wavelength, 0, 0
         
-        index = len(result[0]) // 2
-        downloaded_files = Fido.fetch(result[0, index], path='./{file}', progress=False)
+        timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%SZ')
+        url = f"https://api.helioviewer.org/v2/getJP2Image/?date={timestamp_str}&sourceId={source_id}"
         
-        solar_map = Map(downloaded_files[0])
-        actual_timestamp = solar_map.date.to_datetime()
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
         
-        if actual_timestamp.tzinfo is None:
-            actual_timestamp = actual_timestamp.replace(tzinfo=timezone.utc)
+        actual_timestamp = timestamp
+        content_disposition = response.headers.get('Content-Disposition', '')
+        if 'filename=' in content_disposition:
+            filename = content_disposition.split('filename=')[1].strip('"')
+            parts = filename.split('__')
+            if len(parts) >= 2:
+                date_part = parts[0].replace('_', '-')
+                time_part = parts[1].replace('_', ':')[:8]
+                try:
+                    actual_timestamp = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
+                    actual_timestamp = actual_timestamp.replace(tzinfo=timezone.utc)
+                except:
+                    pass
         
-        aia_ranges = {131: (7, 1200), 171: (10, 6000), 193: (120, 6000), 304: (50, 2000), 1700: (200, 2500)}
-        
-        data = solar_map.data
-        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
-        if data is None or data.size == 0:
-            return None, timestamp, wavelength, 0, 0
-        
-        vmin = data.min()
-        vmax = data.max()
-        data_normalized = np.clip((data - vmin) / (vmax - vmin), 0, 1)
-        data_8bit = (data_normalized * 255).astype(np.uint8)
-        
-        current_shape = data_8bit.shape
-        zoom_factors = (2048 / current_shape[0], 2048 / current_shape[1])
-        resized = zoom(data_8bit, zoom_factors, order=3)
-        resized = resized[:2048, :2048]
+        from io import BytesIO
+        img = Image.open(BytesIO(response.content))
+        img = img.convert('L')
+        img = img.resize((2048, 2048), Image.LANCZOS)
+        data_8bit = np.array(img)
         
         debug_dir = Path(__file__).parent / 'debug_images'
         debug_dir.mkdir(exist_ok=True)
-        Image.fromarray(resized).save(debug_dir / f'AIA_{wavelength}_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
+        Image.fromarray(data_8bit).save(debug_dir / f'AIA_{wavelength}_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
         
-        return resized.flatten(), actual_timestamp, wavelength, resized.shape[1], resized.shape[0]
+        return data_8bit.flatten(), actual_timestamp, wavelength, 2048, 2048
         
     except Exception as e:
         print(f"Error downloading {wavelength}A: {e}")
-        return None, timestamp, wavelength, 0, 0, 0, 0
+        traceback.print_exc()
+        return None, timestamp, wavelength, 0, 0
 
 
 def create_rgb_image(r_channel, g_channel, b_channel):
@@ -207,7 +193,6 @@ def create_container_file(timestamp, downloads):
 
 
 def main():
-    """Main entry point."""
     hmi_data, hmi_timestamp, hmi_width, hmi_height = download_hmi_nrt()
     
     if hmi_data is None:

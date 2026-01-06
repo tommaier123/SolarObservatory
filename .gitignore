@@ -461,3 +461,4 @@ FodyWeavers.xsd
 # Published Binaries
 !bin/
 !bin/**
+SolarObservatory/timestamp.txt
