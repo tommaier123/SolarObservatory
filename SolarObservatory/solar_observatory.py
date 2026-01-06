@@ -5,13 +5,8 @@ import struct
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import numpy as np
-from sunpy.net import Fido, attrs as a
-from sunpy.map import Map
-import astropy.units as u
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
-from astropy.time import Time, TimeDelta
-from scipy.ndimage import zoom
 import drms
 from astropy.io import fits
 import requests
