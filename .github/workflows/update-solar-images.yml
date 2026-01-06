@@ -34,6 +34,7 @@ jobs:
     - name: Prepare GitHub Pages content
       run: |
         cp ./bin/solar.dat ./pages/
+        cp ./bin/timestamp.txt ./pages/
     
     - name: Setup Pages
       uses: actions/configure-pages@v4

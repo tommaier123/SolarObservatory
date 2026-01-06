@@ -12,19 +12,29 @@ namespace SolarVideo
             DateTime requestedTimestamp = DateTime.UtcNow;
             Console.WriteLine($"Get: {requestedTimestamp:yyyy-MM-dd HH:mm:ss}");
 
-            // Define wavelengths to download: 131, 171, 193, 304, 1700, HMI Mag
-            var wavelengths = new[] { 9, 10, 11, 13, 16, 19 };
+            var hmiResult = await DownloadAndProcessAsync(requestedTimestamp, 19);
             
-            var downloadTasks = wavelengths.Select(sourceId => DownloadAndProcessAsync(requestedTimestamp, sourceId)).ToArray();
-            var results = await Task.WhenAll(downloadTasks);
+            if (hmiResult.rawData == null)
+            {
+                throw new Exception("Failed to download HMI Magnetogram.");
+            }
             
-            var successfulDownloads = results.Where(r => r.rawData != null).ToList();
+            DateTime referenceTimestamp = hmiResult.timestamp;
+            Console.WriteLine($"Reference timestamp from HMI: {referenceTimestamp:yyyy-MM-dd HH:mm:ss}");
+            
+            // Now download AIA wavelengths using the HMI timestamp for consistency
+            var aiaWavelengths = new[] { 9, 10, 11, 13, 16 }; // 131, 171, 193, 304, 1700
+            
+            var downloadTasks = aiaWavelengths.Select(sourceId => DownloadAndProcessAsync(referenceTimestamp, sourceId)).ToArray();
+            var aiaResults = await Task.WhenAll(downloadTasks);
+            
+            var successfulDownloads = aiaResults.Where(r => r.rawData != null).ToList();
+            successfulDownloads.Add(hmiResult); // Add HMI result to the list
             
             if (successfulDownloads.Count > 0)
             {
-                DateTime latestTimestamp = results.Select(r => r.timestamp).Max();
-                
-                await CreateContainerFileAsync(latestTimestamp, successfulDownloads);
+                await CreateContainerFileAsync(referenceTimestamp, successfulDownloads);
+                await SaveTimestampFileAsync(referenceTimestamp);
             }
             else
             {
@@ -151,6 +161,16 @@ namespace SolarVideo
             }
             
             return rgbData;
+        }
+        
+        static async Task SaveTimestampFileAsync(DateTime timestamp)
+        {
+            string timestampPath = Path.Combine(AppContext.BaseDirectory, "timestamp.txt");
+            string timestampStr = timestamp.ToString("yyyy-MM-dd HH:mm:ss");
+            
+            await File.WriteAllTextAsync(timestampPath, timestampStr);
+            
+            Console.WriteLine($"Saved timestamp file: {timestampStr}");
         }
     }
 }
