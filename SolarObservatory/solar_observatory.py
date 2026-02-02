@@ -87,49 +87,43 @@ def download_hmi_nrt():
 
 
 def download_and_process(timestamp, wavelength, detector='AIA'):
-    try:
-        wavelength_to_sourceid = {131: 9, 171: 10, 193: 11, 304: 13, 1700: 16}
-        source_id = wavelength_to_sourceid.get(wavelength)
-        
-        if source_id is None:
-            return None, timestamp, wavelength, 0, 0
-        
-        timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%SZ')
-        url = f"https://api.helioviewer.org/v2/getJP2Image/?date={timestamp_str}&sourceId={source_id}"
-        
-        response = requests.get(url, timeout=60)
-        response.raise_for_status()
-        
-        actual_timestamp = timestamp
-        content_disposition = response.headers.get('Content-Disposition', '')
-        if 'filename=' in content_disposition:
-            filename = content_disposition.split('filename=')[1].strip('"')
-            parts = filename.split('__')
-            if len(parts) >= 2:
-                date_part = parts[0].replace('_', '-')
-                time_part = parts[1].replace('_', ':')[:8]
-                try:
-                    actual_timestamp = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
-                    actual_timestamp = actual_timestamp.replace(tzinfo=timezone.utc)
-                except:
-                    pass
-        
-        from io import BytesIO
-        img = Image.open(BytesIO(response.content))
-        img = img.convert('L')
-        img = img.resize((2048, 2048), Image.LANCZOS)
-        data_8bit = np.array(img)
-        
-        debug_dir = Path(__file__).parent / 'debug_images'
-        debug_dir.mkdir(exist_ok=True)
-        Image.fromarray(data_8bit).save(debug_dir / f'AIA_{wavelength}_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
-        
-        return data_8bit.flatten(), actual_timestamp, wavelength, 2048, 2048
-        
-    except Exception as e:
-        print(f"Error downloading {wavelength}A: {e}")
-        traceback.print_exc()
-        return None, timestamp, wavelength, 0, 0
+    wavelength_to_sourceid = {131: 9, 171: 10, 193: 11, 304: 13, 1700: 16}
+    source_id = wavelength_to_sourceid.get(wavelength)
+    
+    if source_id is None:
+        raise ValueError(f"Invalid wavelength: {wavelength}")
+    
+    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%SZ')
+    url = f"https://api.helioviewer.org/v2/getJP2Image/?date={timestamp_str}&sourceId={source_id}"
+    
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    
+    actual_timestamp = timestamp
+    content_disposition = response.headers.get('Content-Disposition', '')
+    if 'filename=' in content_disposition:
+        filename = content_disposition.split('filename=')[1].strip('"')
+        parts = filename.split('__')
+        if len(parts) >= 2:
+            date_part = parts[0].replace('_', '-')
+            time_part = parts[1].replace('_', ':')[:8]
+            try:
+                actual_timestamp = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
+                actual_timestamp = actual_timestamp.replace(tzinfo=timezone.utc)
+            except:
+                pass
+    
+    from io import BytesIO
+    img = Image.open(BytesIO(response.content))
+    img = img.convert('L')
+    img = img.resize((2048, 2048), Image.LANCZOS)
+    data_8bit = np.array(img)
+    
+    debug_dir = Path(__file__).parent / 'debug_images'
+    debug_dir.mkdir(exist_ok=True)
+    Image.fromarray(data_8bit).save(debug_dir / f'AIA_{wavelength}_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
+    
+    return data_8bit.flatten(), actual_timestamp, wavelength, 2048, 2048
 
 
 def create_rgb_image(r_channel, g_channel, b_channel):
