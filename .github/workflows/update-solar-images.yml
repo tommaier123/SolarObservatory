@@ -26,21 +26,46 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
     
-    - name: Set up Python
+    - name: Generate hash of Python script
+      id: hash
+      run: |
+        HASH=$(sha256sum SolarObservatory/solar_observatory.py | cut -d' ' -f1)
+        echo "script-hash=$HASH" >> $GITHUB_OUTPUT
+        echo "Script hash: $HASH"
+    
+    - name: Cache compiled executable
+      id: cache-executable
+      uses: actions/cache@v4
+      with:
+        path: SolarObservatory/dist/solar_observatory
+        key: solar-observatory-${{ steps.hash.outputs.script-hash }}
+    
+    - name: Set up Python (if cache miss)
+      if: steps.cache-executable.outputs.cache-hit != 'true'
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
         cache: 'pip'
         cache-dependency-path: 'SolarObservatory/requirements.txt'
     
-    - name: Install dependencies
+    - name: Install dependencies and compile (if cache miss)
+      if: steps.cache-executable.outputs.cache-hit != 'true'
       run: |
         pip install -r SolarObservatory/requirements.txt
+        pip install pyinstaller
+        cd SolarObservatory
+        pyinstaller --onefile --name solar_observatory solar_observatory.py
     
     - name: Run solar image downloader
       run: |
         cd SolarObservatory
-        python solar_observatory.py
+        if [ -f "dist/solar_observatory" ]; then
+          chmod +x dist/solar_observatory
+          ./dist/solar_observatory
+        else
+          echo "Error: Executable not found"
+          exit 1
+        fi
     
     - name: Prepare GitHub Pages content
       run: |
