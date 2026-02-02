@@ -54,7 +54,12 @@ jobs:
         pip install -r SolarObservatory/requirements.txt
         pip install pyinstaller
         cd SolarObservatory
-        pyinstaller --onefile --name solar_observatory solar_observatory.py
+        pyinstaller --onefile --name solar_observatory \
+          --collect-data drms \
+          --collect-data astropy \
+          --hidden-import=drms \
+          --hidden-import=astropy.io.fits \
+          solar_observatory.py
     
     - name: Run solar image downloader
       run: |
