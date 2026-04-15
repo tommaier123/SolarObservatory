@@ -15,6 +15,9 @@ from PIL import Image
 
 warnings.filterwarnings('ignore')
 
+# Set this to False to skip saving local debug images and save processing time
+SAVE_DEBUG_IMAGES = False
+
 
 def download_hmi_nrt():
     try:
@@ -74,9 +77,10 @@ def download_hmi_nrt():
             resized = np.array(img)
             resized = np.fliplr(resized)
             
-            debug_dir = Path(__file__).parent / 'debug_images'
-            debug_dir.mkdir(exist_ok=True)
-            Image.fromarray(resized).save(debug_dir / f'HMI_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
+            if SAVE_DEBUG_IMAGES:
+                debug_dir = Path(__file__).parent / 'debug_images'
+                debug_dir.mkdir(exist_ok=True)
+                Image.fromarray(resized).save(debug_dir / f'HMI_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
             
             return resized.flatten(), actual_timestamp, 2048, 2048
         
@@ -86,42 +90,82 @@ def download_hmi_nrt():
         return None, None, 0, 0
 
 
-def download_and_process(timestamp, wavelength, detector='AIA'):
-    wavelength_to_sourceid = {131: 9, 171: 10, 193: 11, 304: 13, 1700: 16}
-    source_id = wavelength_to_sourceid.get(wavelength)
+def download_and_process(timestamp, wavelength):
+    import re
+    all_matches = []
     
-    if source_id is None:
-        raise ValueError(f"Invalid wavelength: {wavelength}")
-    
-    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%SZ')
-    url = f"https://api.helioviewer.org/v2/getJP2Image/?date={timestamp_str}&sourceId={source_id}"
-    
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
-    
+    # Check yesterday, today, and tomorrow to ensure we find the absolute closest image even near midnight
+    for day_offset in [-1, 0, 1]:
+        h = timestamp + timedelta(days=day_offset)
+        base_url = f"http://jsoc.stanford.edu/data/aia/images/{h.year}/{h.month:02d}/{h.day:02d}/{wavelength}/"
+        try:
+            r = requests.get(base_url, timeout=10)
+            if r.status_code == 200:
+                pattern = r'href="([^"]+\.jp2)"'
+                matches = re.findall(pattern, r.text)
+                for m in matches:
+                    all_matches.append((base_url, m))
+        except requests.exceptions.RequestException:
+            pass
+            
+    if not all_matches:
+        raise Exception(f"[{wavelength}] Error: No JP2 files found around {timestamp}")
+        
+    best_match_url = None
+    min_diff = None
     actual_timestamp = timestamp
-    content_disposition = response.headers.get('Content-Disposition', '')
-    if 'filename=' in content_disposition:
-        filename = content_disposition.split('filename=')[1].strip('"')
-        parts = filename.split('__')
-        if len(parts) >= 2:
-            date_part = parts[0].replace('_', '-')
-            time_part = parts[1].replace('_', ':')[:8]
-            try:
-                actual_timestamp = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
-                actual_timestamp = actual_timestamp.replace(tzinfo=timezone.utc)
-            except:
-                pass
+    
+    for base_url, filename in all_matches:
+        try:
+            # Parse filenames like 2026_04_15__00_00_09_348__SDO_AIA_AIA_171.jp2
+            parts = filename.split('__')
+            if len(parts) >= 2:
+                date_str = parts[0].replace('_', '-')
+                time_str = parts[1][:8].replace('_', ':')
+                file_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+                file_time = file_time.replace(tzinfo=timezone.utc)
+                
+                diff = abs((file_time - timestamp).total_seconds())
+                if min_diff is None or diff < min_diff:
+                    min_diff = diff
+                    best_match_url = base_url + filename
+                    actual_timestamp = file_time
+        except Exception:
+            continue
+            
+    if not best_match_url:
+        # Fallback to the last available file if parsing somehow completely failed
+        best_match_url = all_matches[-1][0] + all_matches[-1][1]
+    
+    print(f"[{wavelength}] Selected closest image: {best_match_url.split('/')[-1]} (diff: {min_diff}s)")
+    
+    r_nrt = requests.get(best_match_url, timeout=60)
+    r_nrt.raise_for_status()
     
     from io import BytesIO
-    img = Image.open(BytesIO(response.content))
-    img = img.convert('L')
-    img = img.resize((2048, 2048), Image.LANCZOS)
+    # Load JP2 directly with PIL
+    img = Image.open(BytesIO(r_nrt.content))
+    data = np.array(img).astype(np.float32) / 255.0
+    
+    if wavelength == 304:
+        data = np.clip(data * 1.75, 0.0, 1.0)
+    
+    import sunpy.visualization.colormaps as cm
+    cmap = cm.cmlist.get(f'sdoaia{wavelength}')
+    if cmap is not None:
+        rgba = cmap(data)
+        data_8bit = (rgba[:, :, :3] * 255).astype(np.uint8)
+        img = Image.fromarray(data_8bit).convert("L")
+    else:
+        img = img.convert("L")
+    
+    img = img.resize((2048, 2048), Image.Resampling.LANCZOS)
     data_8bit = np.array(img)
     
-    debug_dir = Path(__file__).parent / 'debug_images'
-    debug_dir.mkdir(exist_ok=True)
-    Image.fromarray(data_8bit).save(debug_dir / f'AIA_{wavelength}_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
+    if SAVE_DEBUG_IMAGES:
+        debug_dir = Path(__file__).parent / 'debug_images'
+        debug_dir.mkdir(exist_ok=True)
+        Image.fromarray(data_8bit).save(debug_dir / f'AIA_{wavelength}_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
     
     return data_8bit.flatten(), actual_timestamp, wavelength, 2048, 2048
 
