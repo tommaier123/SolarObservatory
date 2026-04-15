@@ -8,6 +8,9 @@ import traceback
 from pathlib import Path
 import re
 from concurrent.futures import ThreadPoolExecutor
+from aiapy.calibrate import degradation
+from astropy.time import Time
+import astropy.units as u
 
 debug_dir = Path("d:/media/Research/OffTopic/SolarObservatory/SolarObservatory/debug_images")
 debug_dir.mkdir(exist_ok=True, parents=True)
@@ -37,19 +40,14 @@ def process_fits(response_content, output_filename, wl):
     # The 304 upper bound is specifically reduced from 250.0 to 100.0 to drastically increase high-end contrast
     # because NRT exptime-normalized DN/s data caps around ~90.0
     scaling_params = {
-        131: (0.7, 500.0, 3),    # max in v6 is 500.0
-        171: (200.0, 14000.0, 1),# sqrt
+        131: (0.7, 500.0, 3),    # log10
+        171: (5.0, 1605.0, 1),   # sqrt
         193: (20.0, 2500.0, 3),  # log10
-        304: (0.8, 100.0, 3),    # Custom tighter log10 bounds for NRT 304 to fix contrast (blacker darks, whiter whites)
+        304: (0.7, 35.0, 3),     # log10
         1700: (220.0, 5000.0, 1) # sqrt
     }
-    
-    if wl == 171:
-        # Helioviewer unconditionally hardcodes 171 according to AIA IDL limits
-        data = np.clip(data - 5.0, 0.1, None) ** 0.5
-        data = np.clip(data, 1.0, 40.0)
-        normalized = (data - 1.0) / (40.0 - 1.0)
-    elif wl in scaling_params:
+
+    if wl in scaling_params:
         dataMin, dataMax, dataScalingType = scaling_params[wl]
         
         # Clip to strictly defined data bounds
@@ -68,15 +66,6 @@ def process_fits(response_content, output_filename, wl):
         else: # LINEAR
             normalized = (data - dataMin) / (dataMax - dataMin)
             
-    else:
-        # Fallback to dynamic percentile
-        vmin = max(0, np.percentile(data, 1))
-        vmax = np.percentile(data, 99.9)
-        if vmax <= vmin:
-            vmax = vmin + 1e-5
-        normalized = np.clip((data - vmin) / (vmax - vmin), 0, 1)
-        normalized = normalized ** 0.5
-        
     normalized = np.clip(normalized, 0, 1)
 
     import sunpy.visualization.colormaps as cm
@@ -110,12 +99,12 @@ def process_wl(wl, source_id):
     print(f"Starting {wl}...")
     try:
         hv_api = f"https://api.helioviewer.org/v2/getClosestImage/?date={now.strftime('%Y-%m-%dT%H:%M:%S.000Z')}&sourceId={source_id}"
-        r_hv = requests.get(hv_api).json()
+        r_hv = requests.get(hv_api, timeout=20).json()
         hv_id = r_hv['id']
         hv_date_str = r_hv['date']
         sync_dt = datetime.strptime(hv_date_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        
-        r_png = requests.get(f"https://api.helioviewer.org/v2/downloadImage/?id={hv_id}&scale=4")
+
+        r_png = requests.get(f"https://api.helioviewer.org/v2/downloadImage/?id={hv_id}&scale=4", timeout=30)
         if r_png.status_code == 200:
             hv_img = Image.open(BytesIO(r_png.content)).convert("RGB")
             hv_img.save(debug_dir / f"{wl}_hv.png")
