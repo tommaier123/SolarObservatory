@@ -87,44 +87,77 @@ def download_hmi_nrt():
 
 
 def download_and_process(timestamp, wavelength, detector='AIA'):
-    wavelength_to_sourceid = {131: 9, 171: 10, 193: 11, 304: 13, 1700: 16}
-    source_id = wavelength_to_sourceid.get(wavelength)
-    
-    if source_id is None:
-        raise ValueError(f"Invalid wavelength: {wavelength}")
-    
-    timestamp_str = timestamp.strftime('%Y-%m-%dT%H:%M:%SZ')
-    url = f"https://api.helioviewer.org/v2/getJP2Image/?date={timestamp_str}&sourceId={source_id}"
-    
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
-    
-    actual_timestamp = timestamp
-    content_disposition = response.headers.get('Content-Disposition', '')
-    if 'filename=' in content_disposition:
-        filename = content_disposition.split('filename=')[1].strip('"')
-        parts = filename.split('__')
-        if len(parts) >= 2:
-            date_part = parts[0].replace('_', '-')
-            time_part = parts[1].replace('_', ':')[:8]
+    try:
+        import re
+        # Check current hour and adjacent hours to find the closest NRT file
+        hours = [
+            timestamp.replace(minute=0, second=0, microsecond=0),
+            (timestamp + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0),
+            (timestamp - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        ]
+        
+        best_diff = 1e9
+        best_url = None
+        best_ts = None
+        
+        for h in hours:
+            base_url = f"http://jsoc.stanford.edu/data/aia/synoptic/nrt/{h.year}/{h.month:02d}/{h.day:02d}/H{h.hour:02d}00/"
             try:
-                actual_timestamp = datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
-                actual_timestamp = actual_timestamp.replace(tzinfo=timezone.utc)
-            except:
-                pass
-    
-    from io import BytesIO
-    img = Image.open(BytesIO(response.content))
-    img = img.convert('L')
-    img = img.resize((2048, 2048), Image.LANCZOS)
-    data_8bit = np.array(img)
-    
-    debug_dir = Path(__file__).parent / 'debug_images'
-    debug_dir.mkdir(exist_ok=True)
-    Image.fromarray(data_8bit).save(debug_dir / f'AIA_{wavelength}_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
-    
-    return data_8bit.flatten(), actual_timestamp, wavelength, 2048, 2048
+                r = requests.get(base_url, timeout=15)
+                if r.status_code == 200:
+                    pattern = f'AIA{h.year}{h.month:02d}{h.day:02d}_(\\d{{6}})_{wavelength:04d}\\.fits'
+                    matches = re.findall(pattern, r.text)
+                    for time_str in matches:
+                        ts = datetime.strptime(f"{h.year}{h.month:02d}{h.day:02d}_{time_str}", "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+                        diff = abs((ts - timestamp).total_seconds())
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_file = f"AIA{h.year}{h.month:02d}{h.day:02d}_{time_str}_{wavelength:04d}.fits"
+                            best_url = base_url + best_file
+                            best_ts = ts
+            except Exception as e:
+                continue
+                
+        if best_url is None:
+            print(f"No AIA NRT data found for {wavelength} near {timestamp}")
+            return None, None, 0, 0
 
+        actual_timestamp = best_ts
+        
+        response = requests.get(best_url, timeout=60)
+        response.raise_for_status()
+
+        from io import BytesIO
+        with fits.open(BytesIO(response.content)) as hdul:
+            if len(hdul) > 1 and hdul[1].data is not None:
+                data = hdul[1].data
+            else:
+                data = hdul[0].data
+
+        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        vmin = max(0, np.percentile(data, 1))
+        vmax = np.percentile(data, 99.9)
+        if vmax <= vmin:
+            vmax = vmin + 1e-5
+        
+        normalized = np.clip((data - vmin) / (vmax - vmin), 0, 1)
+        data_8bit = ((normalized ** 0.5) * 255).astype(np.uint8)
+
+        img = Image.fromarray(data_8bit)
+        img = img.resize((2048, 2048), Image.LANCZOS)
+        resized = np.array(img)
+        resized = np.flipud(resized)
+
+        debug_dir = Path(__file__).parent / 'debug_images'
+        debug_dir.mkdir(exist_ok=True)
+        Image.fromarray(resized).save(debug_dir / f'AIA_{wavelength}_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
+
+        return resized.flatten(), actual_timestamp, wavelength, 2048, 2048
+    except Exception as e:
+        print(f"Error downloading AIA {wavelength} data: {e}")
+        traceback.print_exc()
+        return None, None, 0, 0
 
 def create_rgb_image(r_channel, g_channel, b_channel):
     if len(r_channel) != len(g_channel) or len(g_channel) != len(b_channel):
