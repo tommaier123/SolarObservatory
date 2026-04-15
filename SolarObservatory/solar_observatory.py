@@ -12,6 +12,7 @@ from astropy.io import fits
 import requests
 import traceback
 from PIL import Image
+import time
 
 warnings.filterwarnings('ignore')
 
@@ -28,7 +29,16 @@ def download_hmi_nrt():
         query_start = (now - timedelta(hours=24)).strftime('%Y.%m.%d_%H:%M:%S_TAI')
         query_end = now.strftime('%Y.%m.%d_%H:%M:%S_TAI')
         
-        result = client.query(f'{series}[{query_start}-{query_end}]', key='T_REC', seg='magnetogram')
+        result = None
+        for attempt in range(5):
+            try:
+                result = client.query(f'{series}[{query_start}-{query_end}]', key='T_REC', seg='magnetogram')
+                break
+            except Exception as e:
+                print(f"JSOC Query failed (attempt {attempt + 1}/5): {e}. Retrying in 10s...")
+                if attempt == 4:
+                    raise
+                time.sleep(10)
         
         if isinstance(result, tuple):
             keys, segments = result
