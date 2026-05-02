@@ -2,97 +2,79 @@
 # -*- coding: utf-8 -*-
 
 import struct
+import io
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
-import drms
-from astropy.io import fits
 import requests
 import traceback
 from PIL import Image
-import time
+ 
 
 warnings.filterwarnings('ignore')
 
 # Set this to False to skip saving local debug images and save processing time
-SAVE_DEBUG_IMAGES = False
+SAVE_DEBUG_IMAGES = True
 
 
 def download_hmi_nrt():
     try:
-        client = drms.Client()
-        series = 'hmi.m_720s_nrt'
-        
         now = datetime.now(timezone.utc)
-        query_start = (now - timedelta(hours=24)).strftime('%Y.%m.%d_%H:%M:%S_TAI')
-        query_end = now.strftime('%Y.%m.%d_%H:%M:%S_TAI')
-        
-        result = None
-        for attempt in range(5):
+        candidates = []
+
+        # Check yesterday, today, and tomorrow so the newest 4k quickview is found even near midnight.
+        for day_offset in [-1, 0, 1]:
+            d = now + timedelta(days=day_offset)
+            base_url = f'https://jsoc1.stanford.edu/data/hmi/images/{d.year}/{d.month:02d}/{d.day:02d}/'
             try:
-                result = client.query(f'{series}[{query_start}-{query_end}]', key='T_REC', seg='magnetogram')
-                break
-            except Exception as e:
-                print(f"JSOC Query failed (attempt {attempt + 1}/5): {e}. Retrying in 10s...")
-                if attempt == 4:
-                    raise
-                time.sleep(10)
-        
-        if isinstance(result, tuple):
-            keys, segments = result
-        else:
-            keys = result
-            segments = None
-        
-        if len(keys) == 0:
+                r = requests.get(base_url, timeout=10)
+                if r.status_code != 200:
+                    continue
+
+                # Only accept the plain 4k magnetogram quickview.
+                matches = re.findall(r'href="([0-9_]+_M_4k\.jpg)"', r.text)
+                for m in matches:
+                    parts = m.split('_')
+                    if len(parts) < 2:
+                        continue
+                    date_part = parts[0]
+                    time_part = parts[1]
+                    try:
+                        ts = datetime.strptime(f"{date_part}_{time_part}", '%Y%m%d_%H%M%S')
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        continue
+                    candidates.append((ts, base_url + m))
+            except requests.RequestException:
+                continue
+
+        if not candidates:
             return None, None, 0, 0
-        
-        latest_rec = keys.iloc[-1]['T_REC']
-        
-        if segments is not None and 'magnetogram' in segments.columns:
-            magnetogram_path = segments.iloc[-1]['magnetogram']
-            base_url = "http://jsoc.stanford.edu"
-            fits_url = f"{base_url}{magnetogram_path}"
-            
-            response = requests.get(fits_url, timeout=60)
-            response.raise_for_status()
-            
-            from io import BytesIO
-            with fits.open(BytesIO(response.content)) as hdul:
-                if len(hdul) > 1 and hdul[1].data is not None:
-                    data = hdul[1].data
-                    header = hdul[1].header
-                else:
-                    data = hdul[0].data
-                    header = hdul[0].header
-            
-            time_str = latest_rec.replace('_TAI', '')
-            try:
-                actual_timestamp = datetime.strptime(time_str, '%Y.%m.%d_%H:%M:%S.%f')
-            except ValueError:
-                actual_timestamp = datetime.strptime(time_str, '%Y.%m.%d_%H:%M:%S')
-            
-            if actual_timestamp.tzinfo is None:
-                actual_timestamp = actual_timestamp.replace(tzinfo=timezone.utc)
-            
-            data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
-            vmin, vmax = -1500, 1500
-            normalized = np.clip((data - vmin) / (vmax - vmin), 0, 1)
-            data_8bit = (normalized * 255).astype(np.uint8)
-            
-            img = Image.fromarray(data_8bit)
-            img = img.resize((2048, 2048), Image.LANCZOS)
-            resized = np.array(img)
-            resized = np.fliplr(resized)
-            
-            if SAVE_DEBUG_IMAGES:
-                debug_dir = Path(__file__).parent / 'debug_images'
-                debug_dir.mkdir(exist_ok=True)
-                Image.fromarray(resized).save(debug_dir / f'HMI_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
-            
-            return resized.flatten(), actual_timestamp, 2048, 2048
+
+        candidates.sort(key=lambda x: x[0])
+        actual_timestamp, latest_url = candidates[-1]
+
+        response = requests.get(latest_url, timeout=60)
+        response.raise_for_status()
+
+        img = Image.open(io.BytesIO(response.content))
+
+        # Preserve the original grayscale quicklook, but resize to match the container size.
+        img = img.resize((2048, 2048), Image.Resampling.LANCZOS)
+        resized = np.array(img)
+
+        if resized.ndim == 3:
+            resized = resized[:, :, 0]
+
+        if SAVE_DEBUG_IMAGES:
+            debug_dir = Path(__file__).parent / 'debug_images'
+            debug_dir.mkdir(exist_ok=True)
+            Image.fromarray(resized).save(debug_dir / f'HMI_{actual_timestamp.strftime("%Y%m%d_%H%M%S")}.png')
+
+        return resized.flatten(), actual_timestamp, 2048, 2048
         
     except Exception as e:
         print(f"Error downloading HMI NRT data: {e}")
