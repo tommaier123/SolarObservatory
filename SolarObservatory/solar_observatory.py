@@ -165,14 +165,12 @@ def create_container_file(timestamp, downloads):
     successful = [d for d in downloads if d[0] is not None]
     wavelength_order = [131, 171, 193, 304, 1700, 'HMI']
     download_dict = {d[2]: d for d in successful}
-    
-    ordered_downloads = []
-    for wl in wavelength_order:
-        if wl in download_dict:
-            ordered_downloads.append(download_dict[wl])
-        else:
-            black_data = np.zeros(2048 * 2048, dtype=np.uint8)
-            ordered_downloads.append((black_data, timestamp, wl, 2048, 2048))
+    # Require all wavelengths be present; fail fast if any are missing
+    missing = [wl for wl in wavelength_order if wl not in download_dict]
+    if missing:
+        raise Exception(f"Missing wavelengths for container: {missing}")
+
+    ordered_downloads = [download_dict[wl] for wl in wavelength_order]
     
     width, height = 2048, 2048
     rgb_image_0 = create_rgb_image(
