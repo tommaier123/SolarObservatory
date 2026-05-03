@@ -20,9 +20,6 @@ warnings.filterwarnings('ignore')
 SAVE_DEBUG_IMAGES = False
 
 
-
-
-
 def list_hmi_candidates(max_days=1):
     """Return list of (ts, url) for HMI `_M_4k.jpg` over -max_days..+max_days around now."""
     now = datetime.now(timezone.utc)
@@ -98,21 +95,10 @@ def download_aia_by_url(url, wavelength):
         else:
             ts = datetime.now(timezone.utc)
 
-        data = np.array(img).astype(np.float32) / 255.0
-        if wavelength == 304:
-            data = np.clip(data * 1.75, 0.0, 1.0)
-
-        import sunpy.visualization.colormaps as cm
-        cmap = cm.cmlist.get(f'sdoaia{wavelength}')
-        if cmap is not None:
-            rgba = cmap(data)
-            data_8bit = (rgba[:, :, :3] * 255).astype(np.uint8)
-            img_out = Image.fromarray(data_8bit).convert('L')
-        else:
-            img_out = img.convert('L')
-
-        img_out = img_out.resize((2048, 2048), Image.Resampling.LANCZOS)
-        arr = np.array(img_out)
+        if img.mode == 'RGB':
+            img = img.convert('L')
+        img = img.resize((2048, 2048), Image.Resampling.LANCZOS)
+        arr = np.array(img)
 
         if SAVE_DEBUG_IMAGES:
             debug_dir = Path(__file__).parent / 'debug_images'
@@ -140,10 +126,10 @@ def download_hmi_by_url(url):
         except Exception:
             ts = datetime.now(timezone.utc)
 
+        if img.mode == 'RGB':
+            img = img.convert('L')
         img = img.resize((2048, 2048), Image.Resampling.LANCZOS)
         arr = np.array(img)
-        if arr.ndim == 3:
-            arr = arr[:, :, 0]
 
         if SAVE_DEBUG_IMAGES:
             debug_dir = Path(__file__).parent / 'debug_images'
@@ -155,9 +141,6 @@ def download_hmi_by_url(url):
         print(f"Error downloading HMI by URL {url}: {e}")
         traceback.print_exc()
         return None, None, 0, 0
-
-
-
 
 
 def create_rgb_image(r_channel, g_channel, b_channel):
