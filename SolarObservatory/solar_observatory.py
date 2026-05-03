@@ -20,6 +20,13 @@ warnings.filterwarnings('ignore')
 SAVE_DEBUG_IMAGES = False
 
 
+def save_debug_image(image_array, filename):
+    debug_dir = Path(__file__).parent / 'debug_images'
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    image_path = debug_dir / filename
+    Image.fromarray(image_array).save(image_path)
+
+
 def list_hmi_candidates(max_days=1):
     """Return list of (ts, url) for HMI `_M_4k.jpg` over -max_days..+max_days around now."""
     now = datetime.now(timezone.utc)
@@ -101,9 +108,7 @@ def download_aia_by_url(url, wavelength):
         arr = np.array(img)
 
         if SAVE_DEBUG_IMAGES:
-            debug_dir = Path(__file__).parent / 'debug_images'
-            debug_dir.mkdir(exist_ok=True)
-            Image.fromarray(arr).save(debug_dir / f'AIA_{wavelength}_{ts.strftime("%Y%m%d_%H%M%S")}_byurl.png')
+            save_debug_image(arr, f'AIA_{wavelength}_{ts.strftime("%Y%m%d_%H%M%S")}_byurl.png')
 
         return arr.flatten(), ts, wavelength, 2048, 2048
     except Exception as e:
@@ -132,9 +137,7 @@ def download_hmi_by_url(url):
         arr = np.array(img)
 
         if SAVE_DEBUG_IMAGES:
-            debug_dir = Path(__file__).parent / 'debug_images'
-            debug_dir.mkdir(exist_ok=True)
-            Image.fromarray(arr).save(debug_dir / f'HMI_{ts.strftime("%Y%m%d_%H%M%S")}_byurl.png')
+            save_debug_image(arr, f'HMI_{ts.strftime("%Y%m%d_%H%M%S")}_byurl.png')
 
         return arr.flatten(), ts, 2048, 2048
     except Exception as e:
@@ -183,6 +186,12 @@ def create_container_file(timestamp, downloads):
         ordered_downloads[4][0],
         ordered_downloads[5][0]
     )
+
+    if SAVE_DEBUG_IMAGES:
+        rgb0 = np.frombuffer(rgb_image_0, dtype=np.uint8).reshape((2048, 2048, 3))
+        rgb1 = np.frombuffer(rgb_image_1, dtype=np.uint8).reshape((2048, 2048, 3))
+        save_debug_image(rgb0, f'RGB_0_{timestamp.strftime("%Y%m%d_%H%M%S")}.png')
+        save_debug_image(rgb1, f'RGB_1_{timestamp.strftime("%Y%m%d_%H%M%S")}.png')
     
     with open(container_path, 'wb') as f:
         f.write(struct.pack('B', 2))
