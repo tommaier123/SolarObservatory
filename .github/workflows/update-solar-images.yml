@@ -26,26 +26,15 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
     
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
-        cache: 'pip'
-        cache-dependency-path: 'SolarObservatory/requirements.txt'
-    
-    - name: Install dependencies
-      run: |
-        pip install -r SolarObservatory/requirements.txt
-    
     - name: Run solar image downloader
       run: |
-        cd SolarObservatory
-        python solar_observatory.py
+        chmod +x ./bin/SolarObservatory
+        ./bin/SolarObservatory
     
     - name: Prepare GitHub Pages content
       run: |
-        cp ./SolarObservatory/solar.dat ./pages/
-        cp ./SolarObservatory/timestamp.txt ./pages/
+        cp ./bin/solar.dat ./pages/
+        cp ./bin/timestamp.txt ./pages/
     
     - name: Setup Pages
       uses: actions/configure-pages@v4
