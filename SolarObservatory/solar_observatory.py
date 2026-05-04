@@ -108,7 +108,7 @@ def download_aia_by_url(url, wavelength):
         arr = np.array(img)
 
         if SAVE_DEBUG_IMAGES:
-            save_debug_image(arr, f'AIA_{wavelength}_{ts.strftime("%Y%m%d_%H%M%S")}_byurl.png')
+            save_debug_image(arr, f'AIA_{wavelength}_{ts.strftime("%Y%m%d_%H%M%S")}.png')
 
         return arr.flatten(), ts, wavelength, 2048, 2048
     except Exception as e:
@@ -137,7 +137,7 @@ def download_hmi_by_url(url):
         arr = np.array(img)
 
         if SAVE_DEBUG_IMAGES:
-            save_debug_image(arr, f'HMI_{ts.strftime("%Y%m%d_%H%M%S")}_byurl.png')
+            save_debug_image(arr, f'HMI_{ts.strftime("%Y%m%d_%H%M%S")}.png')
 
         return arr.flatten(), ts, 2048, 2048
     except Exception as e:
