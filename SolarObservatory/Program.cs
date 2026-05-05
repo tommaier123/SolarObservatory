@@ -6,8 +6,14 @@ namespace SolarObservatory
 {
     internal class Program
     {
+        // Limit heavy CPU processing to the number of physical cores available (usually 2 on standard GitHub Actions)
+        static readonly SemaphoreSlim _magickSemaphore = new SemaphoreSlim(Environment.ProcessorCount);
+
         // Set to false to skip saving debug images
         const bool SAVE_DEBUG_IMAGES = false;
+
+        // Use a persistent HTTP client to prevent socket exhaustion and repeated connection overhead
+        static readonly HttpClient client = new HttpClient();
 
         static async Task<int> Main(string[] args)
         {
@@ -27,26 +33,23 @@ namespace SolarObservatory
                 // Build candidate lists in parallel (over -1..+1 days)
                 var lists = new Dictionary<string, List<(DateTime ts, string url)>>();
 
-                using (var client = new HttpClient())
+                var tasks = new List<Task>();
+                foreach (var wl in aiaWavelengths)
                 {
-                    var tasks = new List<Task>();
-                    foreach (var wl in aiaWavelengths)
-                    {
-                        tasks.Add(Task.Run(async () =>
-                        {
-                            var res = await ListAiaCandidates(client, wl, 1);
-                            lock (lists) { lists[wl.ToString()] = res; }
-                        }));
-                    }
-
                     tasks.Add(Task.Run(async () =>
                     {
-                        var res = await ListHmiCandidates(client, 1);
-                        lock (lists) { lists["HMI"] = res; }
+                        var res = await ListAiaCandidates(client, wl, 1);
+                        lock (lists) { lists[wl.ToString()] = res; }
                     }));
-
-                    await Task.WhenAll(tasks);
                 }
+
+                tasks.Add(Task.Run(async () =>
+                {
+                    var res = await ListHmiCandidates(client, 1);
+                    lock (lists) { lists["HMI"] = res; }
+                }));
+
+                await Task.WhenAll(tasks);
 
                 // collect candidate reference times: take latest N from each list
                 var REF_CANDIDATES = new HashSet<DateTime>();
@@ -103,40 +106,38 @@ namespace SolarObservatory
 
                 // Download selected images in parallel
                 var downloads = new List<(byte[] data, DateTime ts, string key, int w, int h)>();
-                using (var client = new HttpClient())
+
+                var dlTasks = new List<Task>();
+
+                foreach (var wl in aiaWavelengths)
                 {
-                    var dlTasks = new List<Task>();
-
-                    foreach (var wl in aiaWavelengths)
-                    {
-                        var key = wl.ToString();
-                        var (ts, url) = bestSelection[key];
-                        if (!string.IsNullOrEmpty(url))
-                        {
-                            dlTasks.Add(Task.Run(async () =>
-                            {
-                                var res = await DownloadAiaByUrl(client, url!, wl);
-                                lock (downloads) { if (res.data != null) downloads.Add((res.data, res.ts, key, res.w, res.h)); else downloads.Add((null, res.ts, key, 0, 0)); }
-                            }));
-                        }
-                        else
-                        {
-                            downloads.Add((null, DateTime.MinValue, key, 0, 0));
-                        }
-                    }
-
-                    var h = bestSelection["HMI"];
-                    if (!string.IsNullOrEmpty(h.url))
+                    var key = wl.ToString();
+                    var (ts, url) = bestSelection[key];
+                    if (!string.IsNullOrEmpty(url))
                     {
                         dlTasks.Add(Task.Run(async () =>
                         {
-                            var res = await DownloadHmiByUrl(client, h.url!);
-                            lock (downloads) { if (res.data != null) downloads.Add((res.data, res.ts, "HMI", res.w, res.h)); else downloads.Add((null, res.ts, "HMI", 0, 0)); }
+                            var res = await DownloadAiaByUrl(client, url!, wl);
+                            lock (downloads) { if (res.data != null) downloads.Add((res.data, res.ts, key, res.w, res.h)); else downloads.Add((null, res.ts, key, 0, 0)); }
                         }));
                     }
-
-                    await Task.WhenAll(dlTasks);
+                    else
+                    {
+                        downloads.Add((null, DateTime.MinValue, key, 0, 0));
+                    }
                 }
+
+                var h = bestSelection["HMI"];
+                if (!string.IsNullOrEmpty(h.url))
+                {
+                    dlTasks.Add(Task.Run(async () =>
+                    {
+                        var res = await DownloadHmiByUrl(client, h.url!);
+                        lock (downloads) { if (res.data != null) downloads.Add((res.data, res.ts, "HMI", res.w, res.h)); else downloads.Add((null, res.ts, "HMI", 0, 0)); }
+                    }));
+                }
+
+                await Task.WhenAll(dlTasks);
 
                 // Use average timestamp of successful downloads
                 var successfulItems = downloads.Where(d => d.data != null && d.ts != DateTime.MinValue).ToList();
@@ -283,20 +284,28 @@ namespace SolarObservatory
                 }
                 else ts = DateTime.UtcNow;
 
-                using var img = new MagickImage(ms);
-                img.FilterType = FilterType.Lanczos;
-                img.Resize(2048, 2048);
-                img.ColorSpace = ColorSpace.Gray;
-                img.Format = MagickFormat.Gray;
-                img.Depth = 8;
-                var raw = img.ToByteArray();
-
-                if (SAVE_DEBUG_IMAGES)
+                await _magickSemaphore.WaitAsync();
+                try
                 {
-                    SaveDebugImage(raw, 2048, 2048, $"AIA_{wavelength}_{ts:yyyyMMdd_HHmmss}.png");
-                }
+                    using var img = new MagickImage(ms);
+                    img.FilterType = FilterType.Lanczos;
+                    img.Resize(2048, 2048);
+                    img.ColorSpace = ColorSpace.Gray;
+                    img.Format = MagickFormat.Gray;
+                    img.Depth = 8;
+                    var raw = img.ToByteArray();
 
-                return (raw, ts, (int)img.Width, (int)img.Height);
+                    if (SAVE_DEBUG_IMAGES)
+                    {
+                        SaveDebugImage(raw, 2048, 2048, $"AIA_{wavelength}_{ts:yyyyMMdd_HHmmss}.png");
+                    }
+
+                    return (raw, ts, (int)img.Width, (int)img.Height);
+                }
+                finally
+                {
+                    _magickSemaphore.Release();
+                }
             }
             catch (Exception ex)
             {
@@ -323,20 +332,28 @@ namespace SolarObservatory
                 }
                 else ts = DateTime.UtcNow;
 
-                using var img = new MagickImage(ms);
-                img.FilterType = FilterType.Lanczos;
-                img.Resize(2048, 2048);
-                img.ColorSpace = ColorSpace.Gray;
-                img.Format = MagickFormat.Gray;
-                img.Depth = 8;
-                var raw = img.ToByteArray();
-
-                if (SAVE_DEBUG_IMAGES)
+                await _magickSemaphore.WaitAsync();
+                try
                 {
-                    SaveDebugImage(raw, 2048, 2048, $"HMI_{ts:yyyyMMdd_HHmmss}.png");
-                }
+                    using var img = new MagickImage(ms);
+                    img.FilterType = FilterType.Lanczos;
+                    img.Resize(2048, 2048);
+                    img.ColorSpace = ColorSpace.Gray;
+                    img.Format = MagickFormat.Gray;
+                    img.Depth = 8;
+                    var raw = img.ToByteArray();
 
-                return (raw, ts, (int)img.Width, (int)img.Height);
+                    if (SAVE_DEBUG_IMAGES)
+                    {
+                        SaveDebugImage(raw, 2048, 2048, $"HMI_{ts:yyyyMMdd_HHmmss}.png");
+                    }
+
+                    return (raw, ts, (int)img.Width, (int)img.Height);
+                }
+                finally
+                {
+                    _magickSemaphore.Release();
+                }
             }
             catch (Exception ex)
             {
