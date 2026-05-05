@@ -7,12 +7,18 @@ namespace SolarObservatory
     internal class Program
     {
         // Set to false to skip saving debug images
-        const bool SAVE_DEBUG_IMAGES = true;
+        const bool SAVE_DEBUG_IMAGES = false;
 
         static async Task<int> Main(string[] args)
         {
             try
             {
+                // Disable Magick.NET parallelism for individual image operations.
+                // GitHub Actions runners usually only have 2-4 vCPUs. 
+                // Because we are already processing wavelengths concurrently using Task.WhenAll, 
+                // ImageMagick trying to internally multithread EACH resize operation causes massive CPU thread thrashing and slows everything down.
+                Environment.SetEnvironmentVariable("MAGICK_THREAD_LIMIT", "1");
+
                 Console.WriteLine("Starting JSOC/AIA+HMI collector (C# port of solar_observatory.py)");
 
                 // wavelengths of interest (AIA): 131,171,193,304,1700
